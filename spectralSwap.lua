@@ -45,13 +45,13 @@ local function initializeAnimations()
 		local humanoid = spectreBody.Humanoid
 		animationTracks.spectreIdle = loadAnimation(humanoid, idleAnimationId)
 		animationTracks.spectreDown = loadAnimation(humanoid, spectreDownAnimationId)
-		animationTracks.spectreEquipPuck = loadAnimation(humanoid, equipPuckAnimationId)
 	end
 
 	if mainBody and mainBody:FindFirstChildOfClass("Humanoid") then
 		local humanoid = mainBody.Humanoid
 		animationTracks.mainBodyUp = loadAnimation(humanoid, mainBodyUpAnimationId)
 		animationTracks.mainBodyThrowPuck = loadAnimation(humanoid, throwPuckAnimationId)
+		animationTracks.mainBodyEquipPuck = loadAnimation(humanoid, equipPuckAnimationId)
 	end
 end
 
@@ -61,6 +61,15 @@ local function playAnimation(animationName)
 		track:Play()
 	else
 		warn("Animation track not found for: " .. animationName)
+	end
+end
+
+local function stopAnimation(animationName)
+	local track = animationTracks[animationName]
+	if track and track.IsPlaying then
+		track:Stop()
+	else
+		warn("Animation track not found or not playing for: " .. animationName)
 	end
 end
 
@@ -166,33 +175,24 @@ end
 -- TRAJECTORY PATH ---------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-local trajectoryParts = {}
+-- Variables
+local trajectoryParts = {}  -- Store trajectory parts like cylinders
+local trajectorySpheres = {}  -- Store trajectory spheres
 
-local function clearTrajectoryParts()
+-- Function to clear trajectory points
+local function clearTrajectoryPoints()
+	for _, sphere in ipairs(trajectorySpheres) do
+		sphere:Destroy()
+	end
+	trajectorySpheres = {}
+
 	for _, part in ipairs(trajectoryParts) do
 		part:Destroy()
 	end
 	trajectoryParts = {}
 end
 
-local function createCylinderBetweenPoints(startPoint, endPoint)
-	local distance = (endPoint - startPoint).Magnitude
-	local midpoint = (startPoint + endPoint) / 2
-
-	local cylinder = Instance.new("Part")
-	cylinder.Shape = Enum.PartType.Cylinder
-	cylinder.Size = Vector3.new(0.3, distance, 0.3)
-	cylinder.Anchored = true
-	cylinder.CanCollide = false
-	cylinder.Material = Enum.Material.Neon
-	cylinder.Transparency = 0.9
-	cylinder.CFrame = CFrame.new(midpoint, endPoint) * CFrame.Angles(math.pi / 2, 0, 0)
-	cylinder.BrickColor = BrickColor.new("Bright blue")
-	cylinder.Parent = workspace
-
-	return cylinder
-end
-
+-- Function to interpolate between points for smooth trajectory visualization
 local function interpolatePoints(points, factor)
 	local newPoints = {}
 
@@ -201,6 +201,7 @@ local function interpolatePoints(points, factor)
 		local endPoint = points[i + 1]
 		table.insert(newPoints, startPoint)
 
+		-- Linear interpolation between points
 		for j = 1, factor do
 			local t = j / factor
 			local interpolatedPoint = startPoint:Lerp(endPoint, t)
@@ -212,54 +213,89 @@ local function interpolatePoints(points, factor)
 	return newPoints
 end
 
+-- Function to create a cylinder between two points
+local function createCylinderBetweenPoints(startPoint, endPoint)
+	local distance = (endPoint - startPoint).Magnitude
+	local midpoint = (startPoint + endPoint) / 2
+
+	local cylinder = Instance.new("Part")
+	cylinder.Shape = Enum.PartType.Cylinder
+	cylinder.Size = Vector3.new(0.3, distance, 0.3) -- Adjust the size to fit your visual style
+	cylinder.Anchored = true
+	cylinder.CanCollide = false
+	cylinder.CFrame = CFrame.new(midpoint, endPoint) * CFrame.Angles(math.pi / 2, 0, 0)
+	cylinder.BrickColor = BrickColor.new("Bright blue")
+	cylinder.Material = Enum.Material.Neon
+	cylinder.Transparency = 0.7 -- Adjust transparency for visual clarity
+	cylinder.Parent = workspace
+
+	return cylinder
+end
+
+-- Function to calculate trajectory points based on initial position and velocity
 local function calculateTrajectoryPoints(startPos, velocity, timeStep, maxTime, direction)
 	local points = {}
 	local currentPos = startPos
 	local currentVelocity = direction * velocity
 	local gravity = Vector3.new(0, -workspace.Gravity, 0)
 
-	for t = 0, maxTime, timeStep do
-		currentVelocity = currentVelocity + gravity * timeStep
-		currentPos = currentPos + currentVelocity * timeStep
+	local bounces = 0
+	local maxBounces = 1  -- Limit to 1 bounce for simplicity
 
-		-- Check for wall collision
-		local ray = Ray.new(currentPos, currentVelocity.unit * timeStep)
+	for t = 0, maxTime, timeStep do
+		-- Apply gravity to velocity
+		currentVelocity = currentVelocity + gravity * timeStep
+
+		-- Calculate next position
+		local nextPos = currentPos + currentVelocity * timeStep
+
+		-- Check for wall collisions using raycasting
+		local ray = Ray.new(currentPos, nextPos - currentPos)
 		local hit, hitPos, hitNormal = workspace:FindPartOnRayWithWhitelist(ray, {workspace.TestAssets})
 
-		if hit and hit:IsA("BasePart") then
+		if hit and hit:IsA("BasePart") and bounces < maxBounces then
 			if hit:FindFirstChild("isValidWallZone") and hit.isValidWallZone.Value then
-				-- Reflect the velocity vector
+				-- Reflect velocity if a valid wall zone is hit
 				currentVelocity = currentVelocity - 2 * currentVelocity:Dot(hitNormal) * hitNormal
-				currentPos = hitPos + hitNormal * 0.05
+				currentPos = hitPos + hitNormal * 0.05  -- Small offset to prevent sticking
+				bounces = bounces + 1
 			else
-				-- Invalid zone hit
+				-- Stop if an invalid zone is hit
 				break
 			end
+		else
+			currentPos = nextPos
 		end
 
+		-- Stop if the ground or an invalid zone is hit
 		if currentPos.Y <= 0 then
 			break
 		end
 
+		-- Add calculated point to the trajectory
 		table.insert(points, currentPos)
 	end
 
-	return interpolatePoints(points, 2)
+	return interpolatePoints(points, 5)  -- Adjust interpolation factor as needed
 end
 
+-- Function to create a trajectory guide using points and connecting cylinders
 local function createTrajectoryGuide(points)
-	clearTrajectoryParts()
+	-- Clear any previously drawn parts
+	clearTrajectoryPoints()
 
-	local sphereInterval = 7
+	-- Create cylinders and fewer spheres
+	local sphereInterval = 5  -- Set how many points to skip before placing a sphere
 
 	for i = 1, #points - 1 do
 		local startPoint = points[i]
 		local endPoint = points[i + 1]
 
+		-- Create a sphere at every sphereInterval point
 		if i % sphereInterval == 0 then
 			local sphere = Instance.new("Part")
 			sphere.Shape = Enum.PartType.Ball
-			sphere.Size = Vector3.new(0.5, 0.5, 0.5)
+			sphere.Size = Vector3.new(0.5, 0.5, 0.5)  -- Larger spheres for visibility
 			sphere.Position = startPoint
 			sphere.Anchored = true
 			sphere.CanCollide = false
@@ -267,34 +303,56 @@ local function createTrajectoryGuide(points)
 			sphere.Transparency = 0.5
 			sphere.BrickColor = BrickColor.new("Bright blue")
 			sphere.Parent = workspace
-			table.insert(trajectoryParts, sphere)
+			table.insert(trajectorySpheres, sphere)
 		end
 
+		-- Create a cylinder connecting the points
 		local cylinder = createCylinderBetweenPoints(startPoint, endPoint)
 		table.insert(trajectoryParts, cylinder)
 	end
 end
 
+-- Function to update trajectory based on puck and mouse position
 local function updateTrajectory()
+	-- Clear trajectory if puck isn't equipped
+	clearTrajectoryPoints()
+
 	if Puck and Puck:IsA("Part") and puckEquipped then
-		if mainBody and mainBody:FindFirstChild("Head") then
-			local head = mainBody.Head
-			local offset = head.CFrame.RightVector
-			local throwStartPos = head.Position + head.CFrame.LookVector * 1.5 + offset
+		-- Dynamically check for Head or Torso in the mainBody
+		local headOrTorso = mainBody:FindFirstChild("Head") or mainBody:FindFirstChild("UpperTorso") or mainBody:FindFirstChild("Torso")
+		if headOrTorso then
+			-- Offset to adjust the start of the trajectory
+			local offset = headOrTorso.CFrame.RightVector  -- Adjust to suit positioning
+			local throwStartPos = headOrTorso.Position + headOrTorso.CFrame.LookVector * 1.5 + offset
 			local mousePos = mouse.Hit.p
 			local direction = (mousePos - throwStartPos).unit
 			local initialVelocity = math.min((mousePos - throwStartPos).magnitude * 10, maxThrowDistance)
 
+			-- Calculate the trajectory points
 			local trajectoryPoints = calculateTrajectoryPoints(throwStartPos, initialVelocity, 0.05, 2, direction)
 
+			-- Create visual trajectory guide
 			createTrajectoryGuide(trajectoryPoints)
 		else
-			warn("Head part not found in mainBody")
+			warn("Head or Torso part not found in mainBody.")
 		end
-	else
-		clearTrajectoryParts()
 	end
 end
+
+-- Update trajectory in real-time when mouse moves or puck is equipped
+UIS.InputChanged:Connect(function(input)
+	if puckEquipped and input.UserInputType == Enum.UserInputType.MouseMovement then
+		updateTrajectory()
+	end
+end)
+
+-- Call updateTrajectory manually to initialize
+if puckEquipped then
+	updateTrajectory()
+end
+
+-- Function to equip the puck in the player's hand
+local updateTrajectoryConnection = nil
 
 ----------------------------------------------------------------------------------------------------
 -- ZONES ------------------------------------------------------------------------------------------
@@ -316,16 +374,47 @@ local function isValidZone(position)
 		local zonePos = zone.Position
 		local zoneSize = zone.Size / 2
 
-		local margin = 1
+		local margin = 1  -- Allowable margin around the zone
 
+		-- Check if the puck's position is within the valid zone's bounds
 		if (position.X >= zonePos.X - zoneSize.X - margin) and (position.X <= zonePos.X + zoneSize.X + margin) and
 			(position.Y >= zonePos.Y - zoneSize.Y - margin) and (position.Y <= zonePos.Y + zoneSize.Y + margin) and
 			(position.Z >= zonePos.Z - zoneSize.Z - margin) and (position.Z <= zonePos.Z + zoneSize.Z + margin) then
-			local adjustedPosition = Vector3.new(position.X, zonePos.Y + zoneSize.Y + 3, position.Z)
+
+			-- Raycast downward to detect the top of the zone
+			local origin = position + Vector3.new(0, 5, 0)  -- Start slightly above the position
+			local direction = Vector3.new(0, -1000, 0)  -- Cast downwards
+
+			local raycastParams = RaycastParams.new()
+			raycastParams.FilterDescendantsInstances = {zone}
+			raycastParams.FilterType = Enum.RaycastFilterType.Whitelist
+
+			local result = workspace:Raycast(origin, direction, raycastParams)
+			local groundPosition
+			if result then
+				groundPosition = result.Position  -- Position where the ray hit the valid zone
+			else
+				groundPosition = position  -- Use the input position if no hit detected
+			end
+
+			-- Calculate the adjusted position for the spectre body to stand on top of the valid zone
+			local adjustedPosition
+			if spectreBody and spectreBody.PrimaryPart then
+				local humanoid = spectreBody:FindFirstChildOfClass("Humanoid")
+				if humanoid then
+					adjustedPosition = groundPosition + Vector3.new(0, humanoid.HipHeight + zone.Size.Y / 2, 0)
+				else
+					adjustedPosition = groundPosition + Vector3.new(0, zone.Size.Y / 2, 0)
+				end
+			else
+				adjustedPosition = groundPosition + Vector3.new(0, zone.Size.Y / 2, 0)
+			end
+
 			return true, adjustedPosition
 		end
 	end
 
+	-- Return false if no valid zone is detected
 	return false, position
 end
 
@@ -350,12 +439,13 @@ end
 -- Function to throw the puck
 local function throwPuck()
 	if bodiesInitialized and puckEquipped and Puck and Puck:IsA("Part") then
-		canSwitch = false  -- Prevent swapping during throw
+		canSwitch = false  -- Prevent switching during throw
 
 		-- Play the throwing animation
 		playAnimation("mainBodyThrowPuck")
+		stopAnimation("mainBodyEquipPuck")
 
-		-- Remove the weld
+		-- Remove the weld from the puck
 		local weld = Puck:FindFirstChild("PuckWeld")
 		if weld then
 			weld:Destroy()
@@ -368,13 +458,14 @@ local function throwPuck()
 		local targetPosition = mouse.Hit.p
 		local direction = (targetPosition - throwStartPos).unit
 
-		-- Ensure the throw does not exceed the maximum distance
+		-- Ensure the throw doesn't exceed the maximum distance
 		local throwVelocity = direction * maxThrowDistance
 		Puck.Velocity = throwVelocity
 		Puck.Anchored = false
 
 		throwPuckRemote:FireServer(Puck)
 
+		-- Disconnect previous touch event
 		if touchedConnection then
 			touchedConnection:Disconnect()
 			touchedConnection = nil
@@ -384,24 +475,26 @@ local function throwPuck()
 			if hit:IsA("Terrain") or hit:IsA("BasePart") then
 				local isWallZone = hit:FindFirstChild("isValidWallZone") and hit.isValidWallZone.Value
 				if isWallZone then
-					-- Calculate the surface normal
+					-- Reflect the puck's velocity on a valid wall zone
 					local hitNormal = hit.CFrame:VectorToWorldSpace(Vector3.new(0, 0, -1)).unit
-					-- Reflect the velocity vector
 					local reflectedVelocity = Puck.Velocity - 2 * Puck.Velocity:Dot(hitNormal) * hitNormal
-					-- Apply the reflected velocity to the puck
 					Puck.Velocity = reflectedVelocity
 					Puck.Anchored = false
 				else
+					-- Stop the puck in invalid zones
 					Puck.Velocity = Vector3.new(0, 0, 0)
 					Puck.Anchored = true
 
-					-- Check if in valid zone
+					-- Check if the puck is in a valid zone
 					local isValid, adjustedPosition = isValidZone(Puck.Position)
 					if isValid then
 						if not spectreBody.PrimaryPart then
 							spectreBody.PrimaryPart = spectreBody:FindFirstChild("HumanoidRootPart")
 						end
 						spectreBody:SetPrimaryPartCFrame(CFrame.new(adjustedPosition))
+
+						-- Play the spectre down animation
+						playAnimation("spectreDown")
 					else
 						warn("Invalid placement! Puck must land in the valid zone.")
 						resetPuck()
@@ -435,8 +528,8 @@ local function equipPuck()
 	puckEquipped = not puckEquipped
 
 	if puckEquipped then
-		playAnimation("spectreEquipPuck")
-		task.wait(0.5)
+		-- Equip the puck
+		playAnimation("mainBodyEquipPuck")  -- Play the equip animation
 
 		Puck = ReplicatedStorage:WaitForChild("Puck"):Clone()
 		Puck.Parent = workspace
@@ -463,9 +556,12 @@ local function equipPuck()
 			puckEquipped = false
 			Puck:Destroy()
 			Puck = nil
+			-- Stop the animation if equipping fails
+			stopAnimation("mainBodyEquipPuck")
 		end
 	else
-		clearTrajectoryParts()
+		-- Unequip the puck
+		clearTrajectoryPoints()
 		if Puck then
 			local weld = Puck:FindFirstChild("PuckWeld")
 			if weld then
@@ -479,6 +575,9 @@ local function equipPuck()
 			updateTrajectoryConnection:Disconnect()
 			updateTrajectoryConnection = nil
 		end
+
+		-- Stop the equip animation when unequipping
+		stopAnimation("mainBodyEquipPuck")
 	end
 end
 
